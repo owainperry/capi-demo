@@ -1,0 +1,61 @@
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: Cluster
+metadata:
+  name: cluster-1
+  namespace: clusters
+  labels: 
+    cluster-type: demo
+    cni: weavenet
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks:
+      - 192.168.0.0/16
+  controlPlaneRef:
+    apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+    kind: AWSManagedControlPlane
+    name: cluster-1-control-plane
+  infrastructureRef:
+    apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+    kind: AWSManagedControlPlane
+    name: cluster-1-control-plane
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+kind: AWSManagedControlPlane
+metadata:
+  name: cluster-1-control-plane
+  namespace: clusters
+spec:
+  region: eu-central-1
+  sshKeyName: default
+  version: v1.21.2
+  disableVPCCNI: true
+  associateOIDCProvider: true
+  #bastion: true 
+---
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: MachinePool
+metadata:
+  name: cluster-1-pool-0
+  namespace: clusters
+spec:
+  clusterName: cluster-1
+  replicas: 3
+  template:
+    spec:
+      bootstrap:
+        dataSecretName: ""
+      clusterName: cluster-1
+      infrastructureRef:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: AWSManagedMachinePool
+        name: cluster-1-pool-0
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: AWSManagedMachinePool
+metadata:
+  name: cluster-1-pool-0
+  namespace: clusters
+spec:
+  instanceType: t3.large
+  #sshKeyName: "${AWS_SSH_KEY_NAME}"

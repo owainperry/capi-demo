@@ -1,0 +1,445 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: run-kubectl
+  namespace: clusters
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: clusters
+  name: cplane-reader
+rules:
+  - apiGroups: ["controlplane.cluster.x-k8s.io"]
+    resources: ["awsmanagedcontrolplanes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cplane-reader
+  namespace: clusters
+subjects:
+  - kind: ServiceAccount
+    name: run-kubectl
+    namespace: clusters
+roleRef:
+  kind: Role
+  name: cplane-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-templates
+  namespace: clusters
+data:
+
+  kustomization-ingress.yaml: |
+    apiVersion: kustomize.toolkit.fluxcd.io/v1beta1
+    kind: Kustomization
+    metadata:
+      name: ingress
+      namespace: flux-system
+    spec:
+      interval: 10m0s
+      sourceRef:
+        kind: GitRepository
+        name: flux-system
+      path: ./infrastructure/ingress
+      prune: true
+      validation: client
+      patches:
+      - target:
+          group: helm.toolkit.fluxcd.io
+          version: v2beta1
+          kind: HelmRelease
+          name: "ingress-nginx"
+          namespace: "flux-system"
+        patch: |-
+          - op: replace
+            path: "/spec/values/controller/service/annotations/service.beta.kubernetes.io~1aws-load-balancer-ssl-cert"
+            value: arn:aws:acm:eu-west-1:111111111111:certificate/4694ab7f-022f-4272-b1a2-b8218cce4c8e
+
+  infrastructure.yaml: |
+    apiVersion: kustomize.toolkit.fluxcd.io/v1beta1
+    kind: Kustomization
+    metadata:
+      name: sources
+      namespace: flux-system
+    spec:
+      interval: 10m0s
+      sourceRef:
+        kind: GitRepository
+        name: flux-system
+      path: ./infrastructure/sources
+      prune: true
+      validation: client
+    ---
+    apiVersion: kustomize.toolkit.fluxcd.io/v1beta1
+    kind: Kustomization
+    metadata:
+      name: weavenet
+      namespace: flux-system
+    spec:
+      interval: 10m0s
+      sourceRef:
+        kind: GitRepository
+        name: flux-system
+      path: ./infrastructure/weavenet
+      prune: true
+      validation: client
+
+
+
+
+  flux-system-kustomization.yaml: |
+    apiVersion: kustomize.config.k8s.io/v1beta1
+    kind: Kustomization
+    resources:
+    - gotk-components.yaml
+    - gotk-sync.yaml
+    patches:
+    - patch: |
+        - op: add
+          path: "/metadata/annotations/eks.amazonaws.com~1role-arn"
+          value: ${KUSTOMIZATION_ROLENAME}
+      target:
+        kind: ServiceAccount
+        name: "kustomize-controller"
+
+  kustomization-cluster-autoscaler.yaml: |
+    apiVersion: kustomize.toolkit.fluxcd.io/v1beta1
+    kind: Kustomization
+    metadata:
+      name: cluster-autoscaler
+      namespace: flux-system
+    spec:
+      interval: 10m0s
+      sourceRef:
+        kind: GitRepository
+        name: flux-system
+      path: ./infrastructure/cluster-autoscaler
+      prune: true
+      validation: client
+      patches:
+      - target:
+          group: helm.toolkit.fluxcd.io
+          version: v2beta1
+          kind: HelmRelease
+          name: "cluster-autoscaler"
+          namespace: "flux-system"
+        patch: |-
+          - op: replace
+            path: "/spec/values/rbac/serviceAccount/annotations/eks.amazonaws.com~1role-arn"
+            value: $AUTOSCALER_ROLENAME
+
+  kustomization-external-dns.yaml: |
+    apiVersion: kustomize.toolkit.fluxcd.io/v1beta1
+    kind: Kustomization
+    metadata:
+      name: external-dns
+      namespace: flux-system
+    spec:
+      interval: 10m0s
+      sourceRef:
+        kind: GitRepository
+        name: flux-system
+      path: ./infrastructure/external-dns
+      prune: true
+      validation: client
+      patches:
+      - target:
+          group: helm.toolkit.fluxcd.io
+          version: v2beta1
+          kind: HelmRelease
+          name: "external-dns"
+          namespace: "flux-system"
+        patch: |-
+          - op: replace
+            path: "/spec/values/serviceAccount/annotations/eks.amazonaws.com~1role-arn"
+            value: $DNS_ROLENAME
+          - op: replace
+            path: "/spec/values/txtOwnerId"
+            value: ${TXT_OWNER_ID}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: run-kubectl-role-template
+  namespace: clusters
+data:
+  kustomize-controller.json: |
+    {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "",
+                "Effect": "Allow",
+                "Principal": {
+                    "Federated": "$OIDC"
+                },
+                "Action": "sts:AssumeRoleWithWebIdentity",
+                "Condition": {
+                    "StringEquals": {
+                        "$OIDC:sub": "system:serviceaccount:flux-system:kustomize-controller"
+                    }
+                }
+            }
+        ]
+    }
+
+  kms.json: |
+    {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "FluxDecrypt",
+                "Effect": "Allow",
+                "Action": [
+                    "kms:DescribeKey",
+                    "kms:Decrypt"
+                ],
+                "Resource": "arn:aws:kms:us-east-2:111111111111:key/ae12df3e-630e-4d14-9d39-d516bdf977521"
+            }
+        ]
+    }
+
+  external-dns.json: |
+    {
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "R53Put",
+            "Effect": "Allow",
+            "Action": "route53:ChangeResourceRecordSets",
+            "Resource": "arn:aws:route53:::hostedzone/Z0753358291ROABCDABCD"
+        },
+        {
+            "Sid": "R53Read",
+            "Effect": "Allow",
+            "Action": [
+                "route53:ListResourceRecordSets",
+                "route53:ListHostedZones"
+            ],
+            "Resource": "*"
+        }
+      ] 
+    }
+
+  cluster-autoscaler.json: |
+    {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "AutoscalerASGAccess",
+                "Effect": "Allow",
+                "Action": [
+                    "autoscaling:TerminateInstanceInAutoScalingGroup",
+                    "autoscaling:SetDesiredCapacity",
+                    "autoscaling:DescribeTags",
+                    "autoscaling:DescribeLaunchConfigurations",
+                    "autoscaling:DescribeAutoScalingInstances",
+                    "autoscaling:DescribeAutoScalingGroups"
+                ],
+                "Resource": "*"
+            }
+        ]
+    }
+
+---
+apiVersion: capi.weave.works/v1alpha1
+kind: ClusterBootstrapConfig
+metadata:
+  name: configure-cluster
+  namespace: clusters
+spec:
+  clusterSelector:
+    matchLabels:
+      cluster-type: demo
+  jobTemplate:
+    generateName: "configure-cluster-{{ .ObjectMeta.Name }}"
+    spec:
+      initContainers:
+        - image: fluxcd/flux-cli:v0.28.3
+          name: flux-bootstrap
+          volumeMounts:
+            - name: kubeconfig
+              mountPath: "/etc/kubeconfig"
+              readOnly: true
+          #command: ["sleep","600"]
+          args:
+            [
+              "bootstrap",
+              "github",
+              "--kubeconfig",
+              "/etc/kubeconfig/value",
+              "--owner",
+              "owainperry",
+              "--repository",
+              "capi-demo-flux",
+              "--path",
+              "clusters/{{ .ObjectMeta.Name }}",
+            ]
+          env:
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: github-token
+                  key: GITHUB_TOKEN
+        - name: create-iam-role-kustomize-controller
+          image: owainperry/eks-irsa-iam-role-maker:1.0.2
+          env:
+            - name: NAME
+              value: "{{ .ObjectMeta.Name }}"
+            - name: SA_NAMESPACE
+              value: "flux-system"
+            - name: SA_NAME
+              value: "kustomize-controller"
+            - name: IAM_ROLE_NAME_PREFIX
+              value: "kustomize-controller-service-account"
+          volumeMounts:
+            - name: credentials
+              mountPath: "/root/.aws"
+              readOnly: true
+            - name: policy-files
+              mountPath: "/var/policy/kms.json"
+              readOnly: true
+              subPath: kms.json
+        - name: create-iam-role-external-dns
+          image: owainperry/eks-irsa-iam-role-maker:1.0.2
+          env:
+            - name: NAME
+              value: "{{ .ObjectMeta.Name }}"
+            - name: SA_NAMESPACE
+              value: "external-dns"
+            - name: SA_NAME
+              value: "external-dns"
+            - name: IAM_ROLE_NAME_PREFIX
+              value: "external-dns-service-account"
+          volumeMounts:
+            - name: credentials
+              mountPath: "/root/.aws"
+              readOnly: true
+            - name: policy-files
+              mountPath: "/var/policy/external-dns.json"
+              readOnly: true
+              subPath: external-dns.json
+        - name: create-iam-role-cluster-autoscaler
+          image: owainperry/eks-irsa-iam-role-maker:1.0.2
+          env:
+            - name: NAME
+              value: "{{ .ObjectMeta.Name }}"
+            - name: SA_NAMESPACE
+              value: "cluster-autoscaler"
+            - name: SA_NAME
+              value: "cluster-autoscaler"
+            - name: IAM_ROLE_NAME_PREFIX
+              value: "cluster-autoscaler-service-account"
+          volumeMounts:
+            - name: credentials
+              mountPath: "/root/.aws"
+              readOnly: true
+            - name: policy-files
+              mountPath: "/var/policy/cluster-autoscaler.json"
+              readOnly: true
+              subPath: cluster-autoscaler.json
+      containers:
+        - image: owainperry/write-template-2-flux:0.1.4
+          name: write-templates
+          env:
+            - name: TXT_OWNER_ID
+              value: "{{ .ObjectMeta.Name }}"
+            - name: DNS_ROLENAME
+              value: "arn:aws:iam::111111111111:role/external-dns-service-account-{{ .ObjectMeta.Name }}"
+            - name: AUTOSCALER_ROLENAME
+              value: "arn:aws:iam::111111111111:role/cluster-autoscaler-service-account-{{ .ObjectMeta.Name }}"
+            - name: KUSTOMIZATION_ROLENAME
+              value: "arn:aws:iam::111111111111:role/kustomize-controller-service-account-{{ .ObjectMeta.Name }}"
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: github-token
+                  key: GITHUB_TOKEN
+          command: ["/write-template-2-flux"]
+          args:
+            [
+              "run",
+              "-t",
+              "/var/templates",
+              "-e",
+              "owain@weave.works",
+              "-u",
+              "owain",
+              "-f",
+              "https://github.com/owainperry/capi-demo-flux.git",
+            ]
+          # command: ["/bin/sh"]
+          # args: ["-c","sleep 1800"]
+          volumeMounts:
+            - name: policy-files
+              mountPath: "/root/files"
+              readOnly: true
+            - name: flux-system-kustomization
+              mountPath: "/var/templates/clusters/{{ .ObjectMeta.Name }}/flux-system/kustomization.yaml"
+              readOnly: true
+              subPath: flux-system-kustomization.yaml
+            - name: kustomization-cluster-autoscaler
+              mountPath: "/var/templates/clusters/{{ .ObjectMeta.Name }}/kustomization-cluster-autoscaler.yaml"
+              readOnly: true
+              subPath: kustomization-cluster-autoscaler.yaml
+            - name: kustomization-external-dns
+              mountPath: "/var/templates/clusters/{{ .ObjectMeta.Name }}/kustomization-external-dns.yaml"
+              readOnly: true
+              subPath: kustomization-external-dns.yaml
+            - name: infrastructure
+              mountPath: "/var/templates/clusters/{{ .ObjectMeta.Name }}/infrastructure.yaml"
+              readOnly: true
+              subPath: infrastructure.yaml
+            - name: kustomization-ingress
+              mountPath: "/var/templates/clusters/{{ .ObjectMeta.Name }}/kustomization-ingress.yaml"
+              readOnly: true
+              subPath: kustomization-ingress.yaml
+      restartPolicy: Never
+      serviceAccountName: run-kubectl
+      volumes:
+        - name: credentials
+          secret:
+            secretName: "capa-manager-bootstrap-credentials"
+        - name: policy-files
+          configMap:
+            name: "run-kubectl-role-template"
+        - name: kubeconfig
+          secret:
+            secretName: "{{ .ObjectMeta.Name }}-kubeconfig"
+        - name: flux-system-kustomization
+          configMap:
+            name: cluster-templates
+            items:
+            - key: flux-system-kustomization.yaml
+              path: flux-system-kustomization.yaml
+        - name: kustomization-cluster-autoscaler
+          configMap:
+            name: cluster-templates
+            items:
+            - key: kustomization-cluster-autoscaler.yaml
+              path: kustomization-cluster-autoscaler.yaml
+        - name: kustomization-external-dns
+          configMap:
+            name: cluster-templates
+            items:
+            - key: kustomization-external-dns.yaml
+              path: kustomization-external-dns.yaml
+        - name: infrastructure
+          configMap:
+            name: cluster-templates
+            items:
+            - key: infrastructure.yaml
+              path: infrastructure.yaml
+        - name: kustomization-ingress
+          configMap:
+            name: cluster-templates
+            items:
+            - key: kustomization-ingress.yaml
+              path: kustomization-ingress.yaml
+
