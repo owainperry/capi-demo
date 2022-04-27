@@ -48,7 +48,7 @@ echo -n "ghp_JW0C0CeKgQetudDn3BaBx3nBA41234567890" | base64
 - Change the repository to yours on line 349  
 - Change the repository details on line 375  
 
-5. Then run  
+6. Then run  
 
 ```bash
 demo.sh 
@@ -60,15 +60,15 @@ It will take roughly 15 mins to spin up an EKS cluster you get the provisioned c
 clusterctl get kubeconfig <name> --namespace clusters > ~/.kube/<name>.yaml
 ```
 
-6. To delete the cluster 
+7. To delete the cluster 
 
 ```bash 
 kubectl delete cluster cluster-1 
 ```
 
-7. Manually delete the iam roles that have been created , search for "cluster-1" in iam roles. 
+8. Manually delete the iam roles that have been created , search for "cluster-1" in iam roles. 
 
-8. Delete the kind cluster 
+9. Delete the kind cluster 
 
 ```bash 
 kind delete cluster --name cplane1
